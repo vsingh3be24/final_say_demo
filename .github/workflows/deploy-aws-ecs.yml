@@ -1,0 +1,123 @@
+name: Deploy FinalSay to Amazon ECS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - 'Dockerfile'
+      - 'scripts/docker-entrypoint.sh'
+      - 'aws/**'
+      - '.github/workflows/deploy-aws-ecs.yml'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: finalsay-backend
+  ECS_SERVICE: finalsay-service
+  ECS_CLUSTER: finalsay-cluster
+  ECS_TASK_DEFINITION: aws/ecs-task-definition.json
+  CONTAINER_NAME: finalsay-backend
+
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+    permissions:
+      contents: read
+
+  deploy:
+    needs: verify
+    name: Build, Push to ECR, and Deploy to ECS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -f Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Render secret and role ARNs into task definition
+        id: task-template
+        env:
+          TASK_EXECUTION_ROLE_ARN: ${{ vars.ECS_TASK_EXECUTION_ROLE_ARN }}
+          DATABASE_URL_SECRET_ARN: ${{ vars.FINALSAY_DATABASE_URL_SECRET_ARN }}
+          JWT_SECRET_ARN: ${{ vars.FINALSAY_JWT_SECRET_ARN }}
+          CORS_ORIGINS: ${{ vars.FINALSAY_CORS_ORIGINS }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          required = (
+              "TASK_EXECUTION_ROLE_ARN",
+              "DATABASE_URL_SECRET_ARN",
+              "JWT_SECRET_ARN",
+              "CORS_ORIGINS",
+          )
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit("Configure GitHub repository variables: " + ", ".join(missing))
+          origins = [origin.strip() for origin in os.environ["CORS_ORIGINS"].split(",") if origin.strip()]
+          if not origins or any(origin == "*" or not origin.startswith("https://") for origin in origins):
+              raise SystemExit("FINALSAY_CORS_ORIGINS must contain only explicit HTTPS frontend origins")
+          for name in ("DATABASE_URL_SECRET_ARN", "JWT_SECRET_ARN"):
+              if not os.environ[name].startswith("arn:aws:secretsmanager:"):
+                  raise SystemExit(f"{name} must be an AWS Secrets Manager ARN")
+          if not os.environ["TASK_EXECUTION_ROLE_ARN"].startswith("arn:aws:iam::"):
+              raise SystemExit("ECS_TASK_EXECUTION_ROLE_ARN must be an IAM role ARN")
+
+          source = Path("aws/ecs-task-definition.json")
+          task = json.loads(source.read_text())
+          task["executionRoleArn"] = os.environ["TASK_EXECUTION_ROLE_ARN"]
+          container = next(item for item in task["containerDefinitions"] if item["name"] == "finalsay-backend")
+          environment = {item["name"]: item["value"] for item in container["environment"]}
+          environment["FINALSAY_CORS_ORIGINS"] = ",".join(origins)
+          container["environment"] = [{"name": name, "value": value} for name, value in environment.items()]
+          secrets = {
+              "FINALSAY_DATABASE_URL": os.environ["DATABASE_URL_SECRET_ARN"],
+              "FINALSAY_JWT_SECRET": os.environ["JWT_SECRET_ARN"],
+          }
+          container["secrets"] = [{"name": name, "valueFrom": value} for name, value in secrets.items()]
+          output = Path("aws/ecs-task-definition.rendered.json")
+          output.write_text(json.dumps(task, indent=2) + "\n")
+          print(f"task-definition={output}", file=open(os.environ["GITHUB_OUTPUT"], "a"))
+          PY
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-template.outputs.task-definition }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true

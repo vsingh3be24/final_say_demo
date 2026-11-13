@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+backend/.venv/
+
+# Databases / runtime artifacts
+*.db
+finalsay.db
+backend/finalsay.db
+backend/finalsay-test-*/
+.env
+
+# Node / frontend
+node_modules/
+dist/
+dev-dist/
+apps/web/dist/
+apps/web/dev-dist/
+
+# Foundry compiler and test output
+contracts/out/
+contracts/cache/
+
+# HF model cache (opt-in HF eval only; weights ~1.6GB, never committed)
+.hf-cache/
+
+# OS
+.DS_Store
+
+# TS build info
+*.tsbuildinfo

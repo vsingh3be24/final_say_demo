@@ -1,0 +1,5 @@
+# Local CPU semantic retrieval and NLI inference. Model weights are downloaded
+# from Hugging Face and cached on the first semantic-model run.
+sentence-transformers>=3,<6
+transformers>=4.45,<5
+torch>=2.0

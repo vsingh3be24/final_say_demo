@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: finalsay-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn finalsay.main:create_app --factory --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: FINALSAY_DATABASE_URL
+        fromDatabase:
+          name: finalsay-db
+          property: connectionString
+      - key: FINALSAY_COMPARISON_MODEL
+        value: mock
+      - key: FINALSAY_ANCHOR
+        value: local
+      - key: FINALSAY_JWT_SECRET
+        generateValue: true
+      - key: FINALSAY_SCRAPE_INTERVAL_SECONDS
+        value: "0"
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    healthCheckPath: /api/health
+
+databases:
+  - name: finalsay-db
+    databaseName: finalsay
+    plan: free

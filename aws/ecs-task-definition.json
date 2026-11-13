@@ -1,0 +1,73 @@
+{
+  "family": "finalsay-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "4096",
+  "executionRoleArn": "SET_BY_DEPLOY_WORKFLOW",
+  "containerDefinitions": [
+    {
+      "name": "finalsay-backend",
+      "image": "SET_BY_DEPLOY_WORKFLOW",
+      "essential": true,
+      "stopTimeout": 60,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "hostPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "FINALSAY_ENVIRONMENT",
+          "value": "production"
+        },
+        {
+          "name": "FINALSAY_COMPARISON_MODEL",
+          "value": "semantic"
+        },
+        {
+          "name": "FINALSAY_ANCHOR",
+          "value": "local"
+        },
+        {
+          "name": "FINALSAY_CORS_ORIGINS",
+          "value": "SET_BY_DEPLOY_WORKFLOW"
+        },
+        {
+          "name": "FINALSAY_SCRAPE_INTERVAL_SECONDS",
+          "value": "7200"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "FINALSAY_DATABASE_URL",
+          "valueFrom": "SET_BY_DEPLOY_WORKFLOW"
+        },
+        {
+          "name": "FINALSAY_JWT_SECRET",
+          "valueFrom": "SET_BY_DEPLOY_WORKFLOW"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=4)\""
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/finalsay-backend",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

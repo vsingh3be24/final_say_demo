@@ -1,0 +1,88 @@
+name: Verify FinalSay
+
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'apps/web/**'
+      - 'contracts/**'
+      - 'Dockerfile'
+      - 'scripts/docker-entrypoint.sh'
+      - '.github/workflows/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - 'apps/web/**'
+      - 'contracts/**'
+      - 'Dockerfile'
+      - 'scripts/docker-entrypoint.sh'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests and compile check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: python -m pip install -r requirements.txt
+
+      - name: Run backend tests
+        working-directory: backend
+        run: python -m pytest finalsay/tests -q -o addopts=''
+
+      - name: Compile backend modules
+        working-directory: backend
+        run: python -m compileall -q finalsay
+
+  frontend:
+    name: Frontend production build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/web
+        run: npm ci --no-fund --no-audit
+
+      - name: Build frontend
+        working-directory: apps/web
+        run: npm run build
+
+  contracts:
+    name: Solidity tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run contract tests
+        working-directory: contracts
+        run: forge test -vvv

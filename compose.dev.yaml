@@ -1,0 +1,36 @@
+# FinalSay PostgreSQL service for LOCAL DEVELOPMENT (opt-in, design.md section 8).
+#
+# This only starts Postgres, port-mapped to loopback, for a backend you run
+# outside Docker. The app + persistent Postgres template is compose.yaml. Pass
+# -f explicitly: a bare `docker compose` command picks compose.yaml, not this
+# file.
+#
+# The zero-setup demo defaults to SQLite and needs none of this.
+#
+#   docker compose -f compose.dev.yaml up -d db      # start Postgres
+#   export FINALSAY_DATABASE_URL=postgresql+psycopg2://finalsay:finalsay@127.0.0.1:5432/finalsay
+#   make seed   # isolated synthetic-test.db only; never the product database
+#   docker compose -f compose.dev.yaml down          # tear down
+#
+# Credentials/db/port match the documented FINALSAY_DATABASE_URL:
+#   postgresql+psycopg2://finalsay:finalsay@127.0.0.1:5432/finalsay
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: finalsay-pg
+    environment:
+      POSTGRES_USER: finalsay
+      POSTGRES_PASSWORD: finalsay
+      POSTGRES_DB: finalsay
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - finalsay_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finalsay -d finalsay"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  finalsay_pgdata:

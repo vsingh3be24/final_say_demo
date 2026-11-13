@@ -1,0 +1,34 @@
+services:
+  app:
+    build: .
+    ports:
+      - '127.0.0.1:${FINALSAY_PORT:-8000}:8000'
+    environment:
+      FINALSAY_CORS_ORIGINS: ${FINALSAY_CORS_ORIGINS:?Set the exact HTTPS frontend origin}
+      FINALSAY_JWT_SECRET: ${FINALSAY_JWT_SECRET:?Set a random secret with at least 32 characters}
+      FINALSAY_DATABASE_URL: postgresql+psycopg2://finalsay:${POSTGRES_PASSWORD:?Set a database password}@db:5432/finalsay
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/health/ready", timeout=5)']
+      interval: 30s
+      timeout: 6s
+      retries: 3
+  db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: finalsay
+      POSTGRES_DB: finalsay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a database password}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U finalsay -d finalsay']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+volumes:
+  database:
