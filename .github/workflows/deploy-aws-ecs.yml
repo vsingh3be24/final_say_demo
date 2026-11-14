@@ -1,15 +1,6 @@
 name: Deploy FinalSay to Amazon ECS
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'backend/**'
-      - 'Dockerfile'
-      - 'scripts/docker-entrypoint.sh'
-      - 'aws/**'
-      - '.github/workflows/deploy-aws-ecs.yml'
   workflow_dispatch:
 
 env:

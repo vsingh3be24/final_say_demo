@@ -7,6 +7,7 @@ on:
     paths:
       - 'apps/web/**'
       - '.github/workflows/deploy-pages.yml'
+      - '.github/workflows/deploy-aws-ecs.yml'
   workflow_dispatch:
 
 permissions:
