@@ -52,6 +52,43 @@ def test_date_parser_does_not_consume_from_as_a_month_name():
     assert _date_values("commence from 15 December 2026") == {(12, 15, 2026)}
 
 
+def test_date_parser_handles_indian_dotted_deadlines():
+    assert _date_values("Deadline extended up to 15.11.2026") == {(11, 15, 2026)}
+
+
+def test_extension_word_outside_the_supported_claim_pair_does_not_change_label():
+    model = SemanticComparisonModel()
+    official_ref = "VII/2026/02 dated % September, 2026"
+    official_topic = "The LLB supplementary form concerns May/June examination students"
+    forwarded_ref = "Vili2028/03, Dated 130 July, 2028"
+    forwarded_extension = "The regular NCWEB form deadline is extended until 15 July 2028"
+    vectors = {
+        official_ref: [1.0, 0.0],
+        official_topic: [0.0, 1.0],
+        forwarded_ref: [1.0, 0.0],
+        forwarded_extension: [0.0, 1.0],
+    }
+
+    class _ClaimEncoder:
+        def encode(self, texts, **_kwargs):
+            return np.asarray([vectors[text] for text in texts], dtype=np.float32)
+
+    model._models = lambda: (_ClaimEncoder(), object())
+    model._pair_probabilities = lambda premise, hypothesis: (
+        {"contradiction": 0.96, "entailment": 0.02, "neutral": 0.02}
+        if premise == official_ref and hypothesis == forwarded_ref
+        else {"contradiction": 0.1, "entailment": 0.1, "neutral": 0.8}
+    )
+
+    label, _score, _rationale, evidence = model.classify_with_evidence(
+        f"Ref, No. Exam. {official_ref}\n{official_topic}",
+        f"Ref, No. Exam. {forwarded_ref}\n{forwarded_extension}",
+    )
+
+    assert label == "contradictory"
+    assert "official: ‘VII/2026/02 dated % September, 2026’" in evidence[1]
+
+
 def test_claim_extraction_discards_subject_and_date_headers():
     claims = _content_sentences(
         "Subject: End Semester Examination Time Table for Autumn 2026-27\n"
@@ -194,12 +231,22 @@ def test_semantic_candidate_rank_uses_exact_notice_title_when_body_is_ambiguous(
         action=None,
         redacted_text="A longer scanned body with additional details.",
     )
-    query = "Issued by: University\nSubject: examination timetable"
+    query = (
+        "CIRCULAR: Revised End-Semester Examination Schedule\n"
+        "Issued by: University\nSubject: examination timetable"
+    )
+    generic_text = (
+        "CIRCULAR – Time Table for End Semester Examination\n"
+        "Issued by: University\nSubject: examination timetable"
+    )
+    exact_text = (
+        "Circular Revised End Semester Examination Schedule\n"
+        "A longer scanned body with additional details."
+    )
     vectors = {
         query: np.asarray([1.0, 0.0], dtype=np.float32),
-        "A longer scanned body with additional details.": np.asarray(
-            [0.0, 1.0], dtype=np.float32
-        ),
+        generic_text: np.asarray([1.0, 0.0], dtype=np.float32),
+        exact_text: np.asarray([0.0, 1.0], dtype=np.float32),
     }
     model.embed = lambda texts: np.stack([vectors[text] for text in texts])
 
@@ -235,11 +282,13 @@ def test_semantic_candidate_rank_prefers_explicit_revision_of_matching_title():
         redacted_text="The revised promotion rule applies from 2025 onwards instead.",
     )
     query = "The new promotion rule applies to students from 2024 onwards."
+    query = f"{title}\n{query}"
+    original_text = f"{title}\nThe new promotion rule applies to students from 2024 onwards."
+    revised_text = f"Revised {title}\nThe revised promotion rule applies from 2025 onwards instead."
     vectors = {
         query: np.asarray([1.0, 0.0], dtype=np.float32),
-        "The revised promotion rule applies from 2025 onwards instead.": np.asarray(
-            [0.0, 1.0], dtype=np.float32
-        ),
+        original_text: np.asarray([1.0, 0.0], dtype=np.float32),
+        revised_text: np.asarray([0.0, 1.0], dtype=np.float32),
     }
     model.embed = lambda texts: np.stack([vectors[text] for text in texts])
 

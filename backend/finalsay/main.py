@@ -15,6 +15,7 @@ from finalsay.api import auth as auth_api
 from finalsay.api import benchmark_admin as benchmark_admin_api
 from finalsay.api import comparison as comparison_api
 from finalsay.api import ingestion as ingestion_api
+from finalsay.api import institutions as institutions_api
 from finalsay.api import issuer as issuer_api
 from finalsay.api import issuer_memberships as issuer_memberships_api
 from finalsay.api import notices as notices_api
@@ -77,21 +78,6 @@ def create_app() -> FastAPI:
     Base.metadata.create_all(bind=engine)
     run_migrations(engine)
 
-    try:
-        from finalsay.db import SessionLocal
-        from finalsay.seed.seed import _seed_users
-        with SessionLocal() as seed_db:
-            _seed_users(seed_db)
-            seed_db.commit()
-    except Exception as exc:
-        logger.warning("Auto-seed users skipped: %s", exc)
-
-    try:
-        from finalsay.services.source_onboarding import onboard
-        onboard(apply=True)
-    except Exception as exc:
-        logger.warning("Auto-onboard sources skipped: %s", exc)
-
     @app.middleware("http")
     async def request_logging_middleware(request: Request, call_next):
         start = time.perf_counter()
@@ -121,6 +107,7 @@ def create_app() -> FastAPI:
     app.include_router(provenance_api.router)
     app.include_router(comparison_api.router)
     app.include_router(ingestion_api.router)
+    app.include_router(institutions_api.router)
     app.include_router(notices_api.router)
     app.include_router(reviewer_api.router)
     app.include_router(issuer_api.router)

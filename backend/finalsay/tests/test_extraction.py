@@ -35,6 +35,16 @@ def test_fields_extracted():
         assert 0.0 <= conf <= 1.0
 
 
+def test_dotted_ocr_deadlines_keep_the_full_date_in_extracted_fields():
+    fields = extraction.extract_fields(
+        "Last date for filing up of Examination Form is extended upto "
+        "(Without late fee) 15.07.2026 (till 11:59 pm).\n"
+        "With late fee, 22.07.2028 (till 11:59 pm)."
+    )
+    assert fields["date"][0] == "15.07.2026"
+    assert fields["deadline"][0] == "15.07.2026"
+
+
 def test_body_text_does_not_get_misidentified_as_issuer():
     fields = extraction.extract_fields(
         "The End-Semester Examinations will commence from 20 December 2026."

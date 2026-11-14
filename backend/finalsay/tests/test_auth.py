@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
-from finalsay.auth import require_role
+from finalsay.auth import require_role, verify_password
 from finalsay.db import get_db
 from finalsay.main import create_app
+from finalsay.models import User
 
 
 def _register(client, email, password, role=None):
@@ -35,14 +38,27 @@ def test_health(client: TestClient):
     assert resp.json() == {"status": "ok"}
 
 
-def test_register_login_me(client: TestClient):
-    reg = _register(client, "student@example.com", "s3cret1", role="student")
+def test_register_login_me(client: TestClient, db_session):
+    reg = client.post(
+        "/api/auth/register",
+        json={
+            "email": "Student@Example.com",
+            "password": "s3cret1",
+            "display_name": "New Student",
+            "role": "student",
+        },
+    )
     assert reg.status_code == 201, reg.text
     body = reg.json()
     assert body["email"] == "student@example.com"
     assert body["role"] == "student"
+    assert body["display_name"] == "New Student"
+    user = db_session.get(User, body["id"])
+    assert user is not None
+    assert user.hashed_password != "s3cret1"
+    assert verify_password("s3cret1", user.hashed_password)
 
-    login = _login(client, "student@example.com", "s3cret1")
+    login = _login(client, "STUDENT@EXAMPLE.COM", "s3cret1")
     assert login.status_code == 200, login.text
     token = login.json()["access_token"]
     assert token
@@ -54,7 +70,22 @@ def test_register_login_me(client: TestClient):
 
 def test_duplicate_registration_conflicts(client: TestClient):
     assert _register(client, "dup@example.com", "s3cret1").status_code == 201
-    assert _register(client, "dup@example.com", "s3cret1").status_code == 409
+    duplicate = _register(client, "DUP@example.com", "s3cret1")
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "Email already registered"
+
+
+def test_database_failure_during_registration_is_sanitized(client: TestClient, monkeypatch):
+    def fail_commit(_self):
+        raise SQLAlchemyError("sensitive database driver detail")
+
+    monkeypatch.setattr(Session, "commit", fail_commit)
+    response = _register(client, "temporary@example.com", "s3cret1")
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Registration is temporarily unavailable. Please try again."
+    )
+    assert "sensitive database driver detail" not in response.text
 
 
 def test_login_wrong_password(client: TestClient):

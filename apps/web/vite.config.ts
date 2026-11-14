@@ -2,8 +2,9 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
-// Local builds use '/'. Set VITE_BASE_URL when hosting under a repository path.
-const base = process.env.VITE_BASE_URL || '/'
+// For GitHub Pages under https://<username>.github.io/FinalSay-prototype/
+// Falls back to '/' if VITE_BASE_URL is explicitly set to empty/root.
+const base = process.env.VITE_BASE_URL ?? '/FinalSay-prototype/'
 const apiProxyTarget = process.env.FINALSAY_API_PROXY_TARGET ?? 'http://127.0.0.1:8000'
 
 export default defineConfig({
@@ -16,8 +17,8 @@ export default defineConfig({
         name: 'FinalSay',
         short_name: 'FinalSay',
         description: 'Cross-institution notice verification platform',
-        theme_color: '#102f28',
-        background_color: '#f4f6f2',
+        theme_color: '#1f2937',
+        background_color: '#ffffff',
         display: 'standalone',
         start_url: base,
         scope: base,

@@ -6,10 +6,11 @@ Temporal relations between notices are stored as edges in a relational table
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -69,7 +70,10 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), default="student", nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(200))
+    institution_id: Mapped[int | None] = mapped_column(ForeignKey("institution.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    institution: Mapped["Institution | None"] = relationship()
 
 
 class IssuerMembership(Base):
@@ -106,6 +110,7 @@ class Notice(Base):
     kind: Mapped[str] = mapped_column(String(20), nullable=False)  # official | submission
     title: Mapped[str | None] = mapped_column(String(500))
     published_date: Mapped[str | None] = mapped_column(String(80))
+    published_on: Mapped[date | None] = mapped_column(Date)
     issuer: Mapped[str | None] = mapped_column(String(300))
     notice_date: Mapped[str | None] = mapped_column(String(64))
     deadline: Mapped[str | None] = mapped_column(String(64))
@@ -137,6 +142,14 @@ class Notice(Base):
 
     __table_args__ = (
         Index("ix_notice_institution_id", "institution_id"),
+        Index(
+            "ix_notice_student_feed",
+            "institution_id",
+            "kind",
+            "is_current",
+            "published_on",
+            "id",
+        ),
         Index("ix_notice_kind", "kind"),
         Index(
             "uq_notice_current_official_source_key",

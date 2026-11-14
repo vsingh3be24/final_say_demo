@@ -8,7 +8,9 @@ requests. Statements are intentionally explicit so they remain auditable.
 
 from __future__ import annotations
 
-from sqlalchemy import Engine, inspect
+from sqlalchemy import Engine, inspect, text
+
+from finalsay.services.notice_dates import parse_publication_date
 
 
 _COLUMNS: dict[str, dict[str, str]] = {
@@ -16,9 +18,13 @@ _COLUMNS: dict[str, dict[str, str]] = {
         "scrape_type": "VARCHAR(32) NOT NULL DEFAULT 'unconfigured'",
         "scrape_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
     },
+    "user": {
+        "institution_id": "INTEGER REFERENCES institution(id)",
+    },
     "notice": {
         "title": "VARCHAR(500)",
         "published_date": "VARCHAR(80)",
+        "published_on": "DATE",
         "source_key": "VARCHAR(500)",
         "source_content_sha256": "VARCHAR(64)",
         "extraction_quality": "VARCHAR(24) NOT NULL DEFAULT 'unknown'",
@@ -60,7 +66,29 @@ def run_migrations(engine: Engine) -> None:
                         f'ALTER TABLE "{table}" ADD COLUMN "{name}" {sql_type}'
                     )
                     current.add(name)
+                    if table == "notice" and name == "published_on":
+                        existing_dates = connection.exec_driver_sql(
+                            "SELECT id, published_date FROM notice "
+                            "WHERE published_date IS NOT NULL"
+                        ).all()
+                        date_updates = [
+                            {"notice_id": notice_id, "published_on": parsed}
+                            for notice_id, raw_date in existing_dates
+                            if (parsed := parse_publication_date(raw_date)) is not None
+                        ]
+                        if date_updates:
+                            connection.execute(
+                                text(
+                                    "UPDATE notice SET published_on = :published_on "
+                                    "WHERE id = :notice_id"
+                                ),
+                                date_updates,
+                            )
         if "notice" in existing_tables:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_notice_student_feed "
+                "ON notice (institution_id, kind, is_current, published_on, id)"
+            )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_notice_source_key ON notice (source_key)"
             )

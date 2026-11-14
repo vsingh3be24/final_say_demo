@@ -55,6 +55,44 @@ def test_legacy_institution_schema_defaults_scraper_to_unconfigured(tmp_path):
         engine.dispose()
 
 
+def test_student_college_and_normalized_publication_date_migration(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'college-feed.db'}")
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE institution (id INTEGER PRIMARY KEY, name VARCHAR(200), "
+                "slug VARCHAR(100), source_url VARCHAR(500), active BOOLEAN DEFAULT TRUE)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE user (id INTEGER PRIMARY KEY, email VARCHAR(320), "
+                "hashed_password VARCHAR(255), role VARCHAR(20), display_name VARCHAR(200))"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE notice (id INTEGER PRIMARY KEY, institution_id INTEGER, "
+                "kind VARCHAR(20) NOT NULL, is_current BOOLEAN NOT NULL DEFAULT TRUE, "
+                "source_key VARCHAR(500), published_date VARCHAR(80))"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO notice (id, institution_id, kind, published_date) "
+                "VALUES (1, 7, 'official', '01 Nov 2026'), "
+                "(2, 7, 'official', 'Exam starts on 15 Dec 2026')"
+            )
+
+        run_migrations(engine)
+
+        user_columns = {column["name"] for column in inspect(engine).get_columns("user")}
+        notice_columns = {column["name"] for column in inspect(engine).get_columns("notice")}
+        assert "institution_id" in user_columns
+        assert "published_on" in notice_columns
+        with engine.begin() as connection:
+            dates = connection.exec_driver_sql(
+                "SELECT id, published_on FROM notice ORDER BY id"
+            ).all()
+        assert dates == [(1, "2026-11-01"), (2, None)]
+    finally:
+        engine.dispose()
+
+
 def test_benchmark_annotations_are_unique_per_reviewer_and_pair(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'benchmark-unique.db'}")
     try:

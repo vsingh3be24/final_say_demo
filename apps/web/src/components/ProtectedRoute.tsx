@@ -15,6 +15,13 @@ export default function ProtectedRoute({ children, roles }: Props) {
 
   if (loading) return <p className="muted">Loading…</p>
   if (!user) return <Navigate to="/login" state={{ from: location.pathname }} replace />
+  if (
+    user.role === 'student' &&
+    user.institution_id === null &&
+    location.pathname !== '/onboarding/college'
+  ) {
+    return <Navigate to="/onboarding/college" replace />
+  }
   if (roles && !roles.includes(user.role)) {
     return (
       <div className="card">

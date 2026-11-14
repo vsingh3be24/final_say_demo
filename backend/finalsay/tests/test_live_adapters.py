@@ -258,6 +258,52 @@ def test_http_response_rejects_oversized_content_length():
         _read_bounded_response(OversizedResponse(), 1000)
 
 
+def test_http_stream_socket_failure_is_retried(monkeypatch):
+    import finalsay.adapters.live as live
+
+    monkeypatch.setattr(live, "MIN_REQUEST_INTERVAL", 0)
+    monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
+
+    class Response:
+        status = 200
+        headers = {}
+        fp = None
+
+        def __init__(self, fail_read):
+            self.fail_read = fail_read
+            self.read_count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            self.read_count += 1
+            if self.fail_read:
+                raise OSError(9, "Bad file descriptor")
+            return b"notice body" if self.read_count == 1 else b""
+
+    class Opener:
+        def __init__(self):
+            self.responses = [Response(True), Response(False)]
+
+        def open(self, _request, timeout):
+            assert timeout == 18
+            return self.responses.pop(0)
+
+    client = PublicSiteClient({"vtu.ac.in"})
+    client._opener = Opener()
+
+    status, _headers, body = client._get_with_retries(
+        "https://vtu.ac.in/notices", 100, "vtu.ac.in"
+    )
+
+    assert status == 200
+    assert body == b"notice body"
+
+
 def test_vtu_comment_anchor_does_not_create_duplicate_notice(monkeypatch):
     import finalsay.adapters.live as live
 
@@ -384,6 +430,14 @@ def test_catalog_parser_includes_machine_readable_publication_date():
 
     assert len(parser.items) == 1
     assert _listing_date(parser.items[0][2]) == "2026-11-06"
+
+
+def test_listing_date_prefers_portal_timestamp_over_deadline_in_notice_title():
+    row_text = (
+        "Notification regarding last date for examination forms is extended upto "
+        "15.11.2026. 13 Oct 2026, 07:43 AM STUDENT"
+    )
+    assert _listing_date(row_text) == "13 Oct 2026, 07:43 AM"
 
 
 def test_mumbai_parser_extracts_unique_code_title_publication_date_and_pdf():

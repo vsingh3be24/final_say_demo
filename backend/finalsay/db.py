@@ -17,11 +17,7 @@ class Base(DeclarativeBase):
 def _make_engine(database_url: str):
     """Build an engine, applying SQLite-specific connect args when needed."""
     connect_args: dict = {}
-    if database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql+psycopg2://", 1)
-    elif database_url.startswith("postgresql://") and not database_url.startswith("postgresql+"):
-        database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    elif database_url.startswith("sqlite"):
+    if database_url.startswith("sqlite"):
         # Allow use across FastAPI's threadpool without per-thread checks.
         connect_args["check_same_thread"] = False
     return create_engine(database_url, connect_args=connect_args, future=True)

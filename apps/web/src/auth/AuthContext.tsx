@@ -18,7 +18,9 @@ interface AuthState {
     email: string,
     password: string,
     displayName?: string,
+    institutionId?: number,
   ) => Promise<void>
+  updateInstitution: (institutionId: number) => Promise<void>
   logout: () => void
 }
 
@@ -63,13 +65,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const register = useCallback(
-    async (email: string, password: string, displayName?: string) => {
+    async (email: string, password: string, displayName?: string, institutionId?: number) => {
       // Public registration always creates a student account server-side; no
       // role is sent (privileged roles are provisioned by an admin/seed).
       await api.post('/auth/register', {
         email,
         password,
         display_name: displayName || null,
+        institution_id: institutionId ?? null,
       })
       // Registration does not return a token; log in immediately after.
       await login(email, password)
@@ -77,14 +80,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [login],
   )
 
+  const updateInstitution = useCallback(async (institutionId: number) => {
+    const res = await api.patch<UserOut>('/auth/me/institution', {
+      institution_id: institutionId,
+    })
+    setUser(res.data)
+  }, [])
+
   const logout = useCallback(() => {
     setToken(null)
     setUser(null)
   }, [])
 
   const value = useMemo<AuthState>(
-    () => ({ user, loading, login, register, logout }),
-    [user, loading, login, register, logout],
+    () => ({ user, loading, login, register, updateInstitution, logout }),
+    [user, loading, login, register, updateInstitution, logout],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

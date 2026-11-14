@@ -46,6 +46,10 @@ _DATE_RE = re.compile(
     r"(?:,?\s+(\d{4}))?\b",
     re.IGNORECASE,
 )
+_NUMERIC_DMY_DATE_RE = re.compile(
+    r"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](\d{4})(?!\d)"
+)
+_NUMERIC_YMD_DATE_RE = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
 _SUPERSESSION_RE = re.compile(
     r"\b(postpon(?:ed|ement)?|reschedul(?:ed|ing)?|instead|now\s+(?:be\s+)?"
     r"(?:held|take place|conducted|applicable|apply)|new date|earlier date|"
@@ -81,6 +85,14 @@ def _date_values(text: str) -> set[tuple[int, int, int | None]]:
         month = _MONTHS.get(month_name)
         if month is not None and 1 <= day <= 31:
             dates.add((month, day, int(match.group(5)) if match.group(5) else None))
+    for match in _NUMERIC_DMY_DATE_RE.finditer(text):
+        day, month, year = (int(part) for part in match.groups())
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            dates.add((month, day, year))
+    for match in _NUMERIC_YMD_DATE_RE.finditer(text):
+        year, month, day = (int(part) for part in match.groups())
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            dates.add((month, day, year))
     return dates
 
 
@@ -137,6 +149,7 @@ class SemanticComparisonModel(ComparisonModel):
             part
             for part in (
                 notice.issuer,
+                getattr(notice, "title", None),
                 notice.action,
                 notice.redacted_text,
                 getattr(notice, "supplemental_extracted_text", ""),
@@ -289,11 +302,18 @@ class SemanticComparisonModel(ComparisonModel):
         # Restrict revision cues to extracted substantive claims. A title such
         # as "Revised Schedule" is not evidence that the event date changed;
         # otherwise the UI can report a replacement when both dates match.
-        update_language = bool(
-            _SUPERSESSION_RE.search(" ".join([*official_units, *forwarded_units]))
-        )
+        matched_pair = f"{official_claim} {forwarded_claim}"
+        update_language = bool(_SUPERSESSION_RE.search(matched_pair))
         official_revision = bool(
             _REVISION_TITLE_RE.search(premise) and _SUPERSESSION_RE.search(premise)
+        )
+        special_relation = next(
+            (
+                relation
+                for relation, pattern in _SPECIAL_RELATIONS
+                if pattern.search(matched_pair)
+            ),
+            None,
         )
 
         if claim_similarity < 0.30:
@@ -304,12 +324,7 @@ class SemanticComparisonModel(ComparisonModel):
             if update_language and (dates_conflict or official_revision):
                 label = "superseded"
             else:
-                label = "contradictory"
-                if not dates_conflict:
-                    for special_label, pattern in _SPECIAL_RELATIONS:
-                        if pattern.search(hypothesis):
-                            label = special_label
-                            break
+                label = special_relation or "contradictory"
         else:
             label = "unresolved"
 

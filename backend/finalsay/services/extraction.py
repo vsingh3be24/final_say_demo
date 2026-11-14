@@ -122,30 +122,12 @@ def _is_file(path: str) -> bool:
 
 
 def text_from_pdf(data: bytes) -> str:
-    """Extract PDF text, prioritizing PyMuPDF and falling back to pypdf / OCR."""
-    embedded = ""
-    try:
-        import pymupdf as fitz
+    """Extract PDF text, using OCR for blank or clearly damaged text layers."""
+    from pypdf import PdfReader
 
-        doc = fitz.open(stream=data, filetype="pdf")
-        parts = [page.get_text() for page in doc[:30]]
-        doc.close()
-        embedded = "\n".join(parts).strip()[:30_000]
-    except Exception:
-        pass
-
-    if not embedded or _pdf_text_needs_ocr(embedded):
-        try:
-            from pypdf import PdfReader
-
-            reader = PdfReader(io.BytesIO(data), strict=False)
-            pypdf_parts = [(page.extract_text() or "") for page in reader.pages[:30]]
-            pypdf_text = "\n".join(pypdf_parts).strip()[:30_000]
-            if len(pypdf_text) > len(embedded):
-                embedded = pypdf_text
-        except Exception:
-            pass
-
+    reader = PdfReader(io.BytesIO(data), strict=False)
+    parts = [(page.extract_text() or "") for page in reader.pages[:30]]
+    embedded = "\n".join(parts).strip()[:30_000]
     if not embedded or _pdf_text_needs_ocr(embedded):
         scanned = _ocr_pdf(data)
         if _usable_ocr(scanned, embedded):
@@ -253,7 +235,7 @@ _DATE_RE_SRC = (
     rf"\b(?:\d{{1,2}}\s+{_MONTHS}(?:\s+\d{{4}})?"
     rf"|{_MONTHS}\s+\d{{1,2}}(?:,?\s+\d{{4}})?"
     r"|\d{4}-\d{2}-\d{2}"
-    r"|\d{1,2}/\d{1,2}/\d{2,4})\b"
+    r"|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\b"
 )
 _DATE_RE = re.compile(_DATE_RE_SRC, re.IGNORECASE)
 
@@ -269,7 +251,7 @@ _ISSUER_RE = re.compile(
 # "extended to" must be immediately followed by a date to count.
 _DEADLINE_EXPLICIT_RE = re.compile(
     r"(?:deadline|due date|due|last date(?:\s+of\s+\w+)?|closes?(?:\s+on)?|cutoff)"
-    r"\s*(?:is|:|-)?\s*(.+?)(?:\.|\n|$)",
+    r"\s*(?:is|:|-)?\s*(.+?)(?:\.(?!\d)|\n|$)",
     re.IGNORECASE,
 )
 # "by <date>" / "extended to <date>" / "before <date>" — but NOT "Issued by".

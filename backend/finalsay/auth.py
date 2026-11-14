@@ -96,7 +96,13 @@ def require_role(*roles: str):
 
 
 def authenticate_user(db: Session, email: str, password: str) -> User | None:
-    user = db.scalar(select(User).where(User.email == email))
+    try:
+        normalized_email = normalize_email_address(email)
+    except ValueError:
+        return None
+    user = db.scalar(
+        select(User).where(User.email == normalized_email)
+    )
     if user is None or not verify_password(password, user.hashed_password):
         return None
     return user

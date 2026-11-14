@@ -7,6 +7,8 @@
 ROOT_DIR   := $(shell pwd)
 BACKEND    := $(ROOT_DIR)/backend
 WEB        := $(ROOT_DIR)/apps/web
+API_PORT   ?= 8000
+WEB_PORT   ?= 5173
 VENV       := $(BACKEND)/.venv
 VENV_PY    := $(VENV)/bin/python
 PYENV_PY   := $(HOME)/.pyenv/versions/3.11.15/bin/python
@@ -45,10 +47,10 @@ demo:
 
 # --- Individual services ------------------------------------------------------
 backend: install
-	cd $(BACKEND) && HF_HUB_OFFLINE=$(HF_HUB_OFFLINE) TRANSFORMERS_OFFLINE=$(TRANSFORMERS_OFFLINE) $(VENV_PY) -m uvicorn finalsay.main:app --host 127.0.0.1 --port 8000
+	cd $(BACKEND) && HF_HUB_OFFLINE=$(HF_HUB_OFFLINE) TRANSFORMERS_OFFLINE=$(TRANSFORMERS_OFFLINE) $(VENV_PY) -m uvicorn finalsay.main:app --host 127.0.0.1 --port $(API_PORT)
 
 frontend:
-	cd $(WEB) && npm install && npm run dev -- --host 127.0.0.1 --port 5173
+	cd $(WEB) && npm install && FINALSAY_API_PROXY_TARGET=http://127.0.0.1:$(API_PORT) npm run dev -- --host 127.0.0.1 --port $(WEB_PORT)
 
 # --- Data ---------------------------------------------------------------------
 seed: install

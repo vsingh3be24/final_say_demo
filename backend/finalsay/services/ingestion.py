@@ -23,9 +23,20 @@ from finalsay.adapters.base import RawNotice
 from finalsay.models import Institution, Notice, NoticeField, ScrapeProgress, ScrapeRun
 from finalsay.services import extraction
 from finalsay.services.extraction import ExtractionResult
+from finalsay.services.notice_dates import parse_publication_date
 from finalsay.services.provenance import sha256_notice
 
-_TITLE_RE = re.compile(r"(?:^|\n)\s*(?:subject|title)\s*[:\-]\s*(.+)", re.IGNORECASE)
+_TITLE_LINE_RE = re.compile(
+    r"^\s*['\"`‘’“”*•>\-]*\s*(?:subject|title)\s*[:\-]\s*(.*?)\s*$",
+    re.IGNORECASE,
+)
+_TITLE_CONTINUATION_STOP_RE = re.compile(
+    r"^(?:official listing\s*:|issued by\b|from\s*:|ref(?:erence)?\s*[.,]?\s*no\b|"
+    r"the\b|"
+    r"notification\s*$|in continuation\b|it is hereby\b|the other contents\b|"
+    r"dated\s+\d|date\s*:)",
+    re.IGNORECASE,
+)
 _DEGRADED_QUALITIES = {"listing_only", "unextractable"}
 _QUALITY_RANK = {
     "listing_only": 0,
@@ -35,6 +46,37 @@ _QUALITY_RANK = {
     "issuer_submitted": 2,
     "student_submitted": 2,
 }
+
+
+def _extract_title(text: str | None) -> str | None:
+    """Extract a subject/title heading, including OCR punctuation and wraps."""
+    if not text:
+        return None
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = _TITLE_LINE_RE.match(line)
+        if not match:
+            continue
+        parts = [match.group(1).strip().strip("\"'`‘’“”.,;:")]
+        for continuation in lines[index + 1 : index + 3]:
+            if not continuation.strip():
+                break
+            clean = continuation.strip().lstrip("'\"`‘’“”*•>-").strip()
+            if not clean or _TITLE_CONTINUATION_STOP_RE.match(clean):
+                break
+            parts.append(clean.strip().strip("\"'`‘’“”.,;:"))
+        title = " ".join(part for part in parts if part)
+        return title[:500] or None
+    return None
+
+
+def _set_publication_date(notice: Notice, value: object) -> None:
+    """Preserve the source display date and its conservative normalized form."""
+    if value is None:
+        return
+    raw = extraction.normalize_unicode_text(str(value))[:80]
+    notice.published_date = raw
+    notice.published_on = parse_publication_date(raw)
 
 
 def _stored_quality(notice: Notice, incoming_text: str) -> str:
@@ -179,7 +221,7 @@ def upsert_official(
             current.retrieved_at = datetime.now(timezone.utc)
             published_date = raw.metadata.get("source_date")
             if published_date:
-                current.published_date = extraction.normalize_unicode_text(str(published_date))[:80]
+                _set_publication_date(current, published_date)
             return current, "unchanged"
         if current.sha256 == digest and not changed_source_file:
             # Existing rows predate the raw-file fingerprint. Establish a
@@ -193,7 +235,7 @@ def upsert_official(
                 current.extraction_quality = incoming_quality
             published_date = raw.metadata.get("source_date")
             if published_date:
-                current.published_date = extraction.normalize_unicode_text(str(published_date))[:80]
+                _set_publication_date(current, published_date)
             return current, "unchanged"
     if current is not None and _preserve_better_current(
         current, incoming_quality, result.redacted_text
@@ -223,7 +265,7 @@ def upsert_official(
                 existing.extraction_quality = incoming_quality
             published_date = raw.metadata.get("source_date")
             if published_date:
-                existing.published_date = extraction.normalize_unicode_text(str(published_date))[:80]
+                _set_publication_date(existing, published_date)
             return existing, "unchanged"
 
     previous_id = None
@@ -237,19 +279,21 @@ def upsert_official(
 
     title = raw.metadata.get("title")
     if not title:
-        title_match = _TITLE_RE.search(raw.text)
-        title = title_match.group(1).strip()[:500] if title_match else None
+        title = _extract_title(raw.text)
     if title:
         title = extraction.normalize_unicode_text(str(title))[:500]
+    published_date = raw.metadata.get("source_date")
+    normalized_published_date = (
+        extraction.normalize_unicode_text(str(published_date))[:80]
+        if published_date else None
+    )
 
     notice = Notice(
         kind="official",
         institution_id=institution.id,
         title=title,
-        published_date=(
-            extraction.normalize_unicode_text(str(raw.metadata["source_date"]))[:80]
-            if raw.metadata.get("source_date") else None
-        ),
+        published_date=normalized_published_date,
+        published_on=parse_publication_date(normalized_published_date),
         source_url=source_url,
         source_key=source_key,
         source_content_sha256=incoming_source_hash,
@@ -397,7 +441,7 @@ def fetch_all(
         summary["created"] += created
         summary["modified"] += modified
         summary["skipped"] += skipped
-        summary["errors"] += int(status == "error")
+        summary["errors"] += int(error is not None)
         institution_result = {
             "slug": adapter.slug,
             "name": adapter.name,
@@ -442,12 +486,11 @@ def create_submission(
 ) -> Notice:
     """Extract a student submission and persist it as a ``submission`` notice."""
     result = extraction.extract(text=text, pdf_bytes=pdf_bytes, image_bytes=image_bytes)
-    title_match = _TITLE_RE.search(result.redacted_text)
     notice = Notice(
         kind="submission",
         institution_id=institution_id,
         submitted_by=submitted_by,
-        title=title_match.group(1).strip()[:500] if title_match else None,
+        title=_extract_title(result.redacted_text),
         extraction_quality="student_submitted",
         retrieved_at=datetime.now(timezone.utc),
     )

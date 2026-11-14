@@ -1,261 +1,295 @@
-import { useEffect, useState } from 'react'
-import { isAxiosError } from 'axios'
-import { Link, useLocation, useParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, ArrowUpRight, CircleCheck, Clock3, FileText, Fingerprint, GitCompareArrows, Landmark, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
 import { api, errorMessage } from '../../api/client'
-import type { ComparisonResponse, NoticeDetail, RelationshipLabel, VerifyResponse } from '../../api/types'
+import type {
+  CandidateOut,
+  ComparisonResponse,
+  NoticeDetail,
+  VerifyResponse,
+} from '../../api/types'
+import { loadResult, saveResult } from '../../api/resultCache'
 import LabelBadge from '../../components/LabelBadge'
 
-const GUIDANCE: Record<RelationshipLabel, { title: string; summary: string; next: string }> = {
-  consistent: {
-    title: 'The details match',
-    summary: 'The submitted details align with the matched official record.',
-    next: 'Use the matched official notice as your reference and check its instructions before you act.',
-  },
-  contradictory: {
-    title: 'The notices disagree',
-    summary: 'The submitted notice conflicts with information in the matched official record.',
-    next: 'Check the dates and instructions on the institution’s official notice before relying on the forwarded copy.',
-  },
-  superseded: {
-    title: 'A newer version may apply',
-    summary: 'The notices contain different dates or instructions for the same activity.',
-    next: 'Look for the latest version on the official notice board before acting on either date.',
-  },
-  corrected: {
-    title: 'A correction was identified',
-    summary: 'One of the notices contains a correction to information in the other.',
-    next: 'Open the official source and follow the instructions in its latest correction.',
-  },
-  extended: {
-    title: 'The deadline appears to have changed',
-    summary: 'The comparison found wording or dates that indicate an extension.',
-    next: 'Confirm the current deadline on the official source before making plans.',
-  },
-  cancelled: {
-    title: 'A cancellation was identified',
-    summary: 'The notices include a cancellation for the activity being compared.',
-    next: 'Confirm which activity was cancelled on the official notice board before changing your plans.',
-  },
-  unresolved: {
-    title: 'No clear conclusion yet',
-    summary: 'The available records do not establish a clear relationship between the notices.',
-    next: 'Check the institution’s official notice board for the most recent instructions.',
-  },
-}
-
-const INTEGRITY_MESSAGES: Record<VerifyResponse['integrity_status'], string> = {
-  VERIFIED: 'The notice matches its public Polygon Amoy anchor.',
-  LOCAL_VERIFIED: 'The notice matches its local hash and Merkle proof.',
-  TAMPERED: 'The notice hash or Merkle proof did not match.',
-  PENDING: 'The anchor transaction is awaiting confirmation.',
-  VERIFICATION_UNAVAILABLE: 'The public chain could not be reached. Try the integrity check again later.',
-  NOT_ANCHORED: 'This notice has no confirmed anchor.',
-}
-
-interface RecentComparison {
-  edgeId: number
-  evidence?: string[]
-  candidateScore?: number | null
-}
-
+// The result / evidence-trail screen for a submission: shows the relationship
+// label + model score where a relationship was resolved, extracted fields,
+// the matched candidate,
+// the model rationale, and an integrity-check button.
 export default function ResultPage() {
-  const { id } = useParams()
-  const { state } = useLocation()
-  const recent = state as RecentComparison | null
+  const { id } = useParams<{ id: string }>()
   const submissionId = Number(id)
+
   const [submission, setSubmission] = useState<NoticeDetail | null>(null)
-  const [outcome, setOutcome] = useState<ComparisonResponse | null>(null)
+  const [candidates, setCandidates] = useState<CandidateOut[]>([])
   const [verify, setVerify] = useState<VerifyResponse | null>(null)
+  const [outcome, setOutcome] = useState<ComparisonResponse | null>(null)
   const [error, setError] = useState('')
-  const [verifyError, setVerifyError] = useState('')
   const [loading, setLoading] = useState(true)
   const [verifying, setVerifying] = useState(false)
-  const [attempt, setAttempt] = useState(0)
 
-  useEffect(() => {
-    const controller = new AbortController()
+  const load = useCallback(async () => {
     setLoading(true)
     setError('')
-    setVerify(null)
-    setVerifyError('')
-    const result = api.get<ComparisonResponse>('/compare/' + submissionId, { signal: controller.signal })
-      .catch((err: unknown) => {
-        if (isAxiosError(err) && err.response?.status === 404) return null
-        throw err
-      })
-    Promise.all([
-      api.get<NoticeDetail>('/notices/' + submissionId, { signal: controller.signal }),
-      result,
-    ])
-      .then(([notice, comparison]) => {
-        setSubmission(notice.data)
-        setOutcome(comparison?.data ?? null)
-      })
-      .catch((err) => {
-        if (!controller.signal.aborted) setError(errorMessage(err))
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false)
-      })
-    return () => controller.abort()
-  }, [submissionId, attempt])
-
-  async function runVerify(candidateId: number, tamper: boolean) {
-    setVerifying(true)
-    setVerify(null)
-    setVerifyError('')
+    const cachedOutcome = loadResult(submissionId)
+    setOutcome(cachedOutcome)
     try {
-      const { data } = await api.get<VerifyResponse>('/provenance/verify/' + candidateId, { params: { tamper } })
-      setVerify(data)
+      const [sub, cands] = await Promise.all([
+        api.get<NoticeDetail>(`/notices/${submissionId}`),
+        api.get<CandidateOut[]>(`/notices/${submissionId}/candidates`),
+      ])
+      setSubmission(sub.data)
+      setCandidates(cands.data)
+      try {
+        const persisted = await api.get<ComparisonResponse>(
+          `/ingest/submissions/${submissionId}/result`,
+        )
+        setOutcome(persisted.data)
+        saveResult(persisted.data)
+      } catch (err) {
+        // Keep the immediate local result visible when the persisted-result
+        // endpoint is temporarily unavailable or an older backend is running.
+        if (!cachedOutcome) setError(errorMessage(err))
+      }
     } catch (err) {
-      setVerifyError(errorMessage(err))
+      setError(errorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [submissionId])
+
+  useEffect(() => {
+    void load()
+  }, [load, submissionId])
+
+  const runVerify = async (tamper: boolean) => {
+    const officialNoticeId = outcome?.candidate_id ?? candidates[0]?.notice.id
+    if (!officialNoticeId) {
+      setError('No matched official notice is available to verify.')
+      return
+    }
+    setVerifying(true)
+    setError('')
+    try {
+      const res = await api.get<VerifyResponse>(
+        `/provenance/verify/${officialNoticeId}`,
+        { params: { tamper } },
+      )
+      setVerify(res.data)
+    } catch (err) {
+      setError(errorMessage(err))
     } finally {
       setVerifying(false)
     }
   }
 
-  const back = <Link to="/submit" className="back-link"><ArrowLeft size={17} aria-hidden="true" /> Check another notice</Link>
-  if (loading) return <div className="card loading-card" role="status">Loading saved verification…</div>
-  if (error || !submission) {
-    return <div className="stack">{back}<div className="card"><h1>Verification result</h1>
-      <p className="error" role="alert">{error || 'This submission could not be found.'}</p>
-      <button type="button" onClick={() => setAttempt(attempt + 1)}>Try again</button>
-    </div></div>
+  if (loading) return <p className="muted">Loading result…</p>
+  if (error && !submission) return <p className="error">{error}</p>
+  if (!submission) return <p className="muted">No submission found.</p>
+
+  const topCandidate = candidates[0]
+  const matchedCandidate = candidates.find(
+    (item) => item.notice.id === outcome?.candidate_id,
+  )?.notice ?? topCandidate?.notice
+  const hasExtractedSourceDocument = Boolean(
+    outcome?.candidate_supplemental_extractions?.some(
+      (item) => item.extraction_quality === 'extracted' && item.extracted_text.trim(),
+    ),
+  )
+  const listingOnlyMatch = Boolean(
+    matchedCandidate &&
+      !hasExtractedSourceDocument &&
+      (['listing_only', 'unextractable'].includes(matchedCandidate.extraction_quality) ||
+        (matchedCandidate.extraction_quality === 'unknown' &&
+          /official listing\s*:/i.test(outcome?.candidate_text ?? ''))),
+  )
+  const integrityMessage = (status: VerifyResponse['integrity_status']) => {
+    switch (status) {
+      case 'VERIFIED': return 'Public Polygon Amoy anchor and notice integrity verified.'
+      case 'LOCAL_VERIFIED': return 'Local hash and Merkle proof match. This notice is not anchored to a public chain.'
+      case 'TAMPERED': return 'Tampering detected: the notice hash or Merkle proof does not match.'
+      case 'PENDING': return 'The anchor transaction is pending confirmation.'
+      case 'VERIFICATION_UNAVAILABLE': return 'The public chain could not be reached; verification is unavailable.'
+      default: return 'No confirmed public blockchain anchor exists for this notice.'
+    }
+  }
+  const detailText = (key: string) => {
+    const value = verify?.details[key]
+    return typeof value === 'string' ? value : null
   }
 
-  const candidateId = outcome?.candidate_id
-  const advice = outcome && GUIDANCE[outcome.label]
-  const reviewed = outcome?.status === 'confirmed' || outcome?.status === 'corrected'
-  const sourceUrl = outcome?.candidate_source_url
-  const sourceLink = sourceUrl && /^https?:\/\//i.test(sourceUrl) ? sourceUrl : null
-  const catalogue = submission.institution_id ? '/notices?institution_id=' + submission.institution_id : '/notices'
-  const matchedRecord = candidateId ? '/notices?notice=' + candidateId : catalogue
-  const transient = recent && recent.edgeId === outcome?.edge_id ? recent : null
-  const evidence = transient?.evidence ?? outcome?.evidence ?? []
-  const retrievalScore = transient?.candidateScore ?? outcome?.candidate_score
-  const ResultIcon = outcome?.gated ? Clock3 : outcome?.label === 'consistent' ? CircleCheck : TriangleAlert
-  const comparedFields = [
-    { field: 'Issuer', submitted: submission.issuer, official: outcome?.candidate_issuer },
-    { field: 'Notice date', submitted: submission.notice_date, official: outcome?.candidate_notice_date },
-    { field: 'Deadline', submitted: submission.deadline, official: outcome?.candidate_deadline },
-  ]
-  const proof = verify?.details
-  const hashPassed = proof?.integrity_ok
-  const hasMerkleProof = typeof proof?.recomputed_root === 'string' && typeof proof?.stored_root === 'string'
-  const transactionUrl = proof?.explorer_transaction_url
-
   return (
-    <div className="stack result-workspace">
-      {back}
-      <header className="page-heading">
-        <div><h1>Verification result</h1><p className="muted">Submission #{submission.id}</p></div>
-        {outcome && <LabelBadge label={outcome.label} />}
-      </header>
-      <div className={'result-overview ' + (outcome?.label === 'consistent' ? 'result-overview-ok' : '')}>
-        <div className="outcome-summary">
-          <span className="result-icon"><ResultIcon size={24} aria-hidden="true" /></span>
-          <div>
-            <h2>{outcome?.gated ? 'In the review queue' : advice?.title ?? 'Comparison unavailable'}</h2>
-            <p>{advice?.summary ?? 'No saved comparison is available for this submission.'}</p>
-            {reviewed && <p className="review-state"><CircleCheck size={16} aria-hidden="true" /> Reviewed by a human reviewer</p>}
-          </div>
-        </div>
-        <aside className="next-step">
-          <h3>Suggested next step</h3>
-          <p>{outcome?.gated ? 'A reviewer will look at this submission. Check the official notice board in the meantime.' : advice?.next ?? 'Look for the notice in the official catalogue.'}</p>
-          <div className="row">
-            {sourceLink ? (
-              <a className="button" href={sourceLink} target="_blank" rel="noreferrer">Open official source <ArrowUpRight size={17} aria-hidden="true" /></a>
-            ) : (
-              <Link className="button" to={matchedRecord}>{candidateId ? 'Open matched record' : 'Browse official notices'} <ArrowRight size={17} aria-hidden="true" /></Link>
+    <div className="stack">
+      <div className="card">
+        <h1>Verification result</h1>
+        <p className="muted">Submission #{submission.id}</p>
+        {outcome ? (
+          <div className="stack-sm">
+            <p className="result-head">
+              <LabelBadge label={outcome.label} />
+              {outcome.label !== 'unresolved' && (
+                <span className="confidence">
+                  raw model score {outcome.confidence.toFixed(3)} (uncalibrated)
+                </span>
+              )}
+              {outcome.gated && <span className="tag">routed to review</span>}
+            </p>
+            <p>
+              <strong>Rationale:</strong> {outcome.rationale}
+            </p>
+            <p className="muted">
+              Scores are raw model rankings, not calibrated probabilities. Results marked
+              unresolved are routed to review; other labels are applied only above the
+              configured threshold.
+            </p>
+            {outcome.evidence && outcome.evidence.length > 0 && (
+              <div>
+                <strong>Comparison evidence</strong>
+                <ul>{outcome.evidence.map((item, index) => <li key={index}>{item}</li>)}</ul>
+              </div>
             )}
-            {outcome?.gated && <button type="button" className="text-button" onClick={() => setAttempt(attempt + 1)}>Refresh review status</button>}
+            <p className="muted">
+              Model: {outcome.model || 'mock'} · edge status: {outcome.status}
+            </p>
           </div>
-        </aside>
-      </div>
-
-      <section className="card" aria-labelledby="comparison-title">
-        <div className="section-title">
-          <span className="section-icon"><GitCompareArrows size={22} aria-hidden="true" /></span>
-          <div><h2 id="comparison-title">Compare the details</h2><p className="muted">
-            {candidateId ? [outcome?.candidate_institution, 'Official notice #' + candidateId].filter(Boolean).join(' · ') : 'No official match was found for this submission.'}
-          </p></div>
-        </div>
-        {candidateId && (
-          <div className="table-wrap">
-            <table className="comparison-table">
-              <thead><tr><th scope="col">Field</th><th scope="col">Your notice</th><th scope="col">Official match</th></tr></thead>
-              <tbody>{comparedFields.map(({ field, submitted, official }) => (
-                <tr key={field} className={submitted && official && submitted.toLowerCase() !== official.toLowerCase() ? 'field-difference' : ''}>
-                  <th scope="row">{field}</th><td>{submitted ?? '—'}</td><td>{official ?? '—'}</td>
-                </tr>
-              ))}</tbody>
-            </table>
+        ) : (
+          <p className="muted">
+            The relationship label is shown right after submitting. Re-submit from{' '}
+            <Link to="/submit">Submit</Link> to see it again.
+          </p>
+        )}
+        {outcome?.candidate_id || topCandidate ? (
+          <p>
+            Matched against official notice <strong>#{outcome?.candidate_id ?? topCandidate?.notice.id}</strong>{' '}
+            {outcome?.candidate_score != null && `(combined retrieval rank ${outcome.candidate_score.toFixed(3)})`}
+          </p>
+        ) : (
+          <p className="muted">No candidate official notice was found for this submission.</p>
+        )}
+        {listingOnlyMatch && (
+          <div className="banner" role="status">
+            <strong>Official document text is unavailable for this match.</strong>
+            <p>
+              FinalSay found a related portal listing, but could not verify its PDF or
+              attachment. Any relationship that depends on changed dates is sent for
+              review instead of being presented as confirmed.
+            </p>
           </div>
         )}
-        <div className="document-details">
-          <details>
-            <summary><FileText size={17} aria-hidden="true" /> Submitted notice and extracted fields</summary>
-            {submission.fields.some((field) => field.value) && (
-              <dl className="kv">{submission.fields.filter((field) => field.value).map(({ field_name, value }) => (
-                <div className="kv-pair" key={field_name}><dt>{field_name.replace(/_/g, ' ')}</dt><dd>{value}</dd></div>
-              ))}</dl>
-            )}
-            <pre className="pre">{submission.redacted_text || 'No readable notice text was saved.'}</pre>
-          </details>
-          {candidateId && (
-            <details>
-              <summary><Landmark size={17} aria-hidden="true" /> Matched official notice</summary>
-              {sourceLink && <a href={sourceLink} target="_blank" rel="noreferrer">View original notice ↗</a>}
-              <pre className="pre">{outcome?.candidate_text || 'No notice text is available for this source.'}</pre>
-              {outcome?.candidate_supplemental_extractions?.map((extraction) => (
-                <section key={extraction.extracted_text_sha256 + extraction.source_url}>
-                  <h3>Extracted source document</h3>
-                  <p className="muted">{extraction.extraction_quality} · {extraction.extraction_method}</p>
-                  <pre className="pre">{extraction.extracted_text}</pre>
-                </section>
-              ))}
-            </details>
-          )}
-          {outcome && (
-            <details>
-              <summary><FileText size={17} aria-hidden="true" /> Model evidence</summary>
-              {outcome.model && <p className="muted">Comparison model: {outcome.model}</p>}
-              {!reviewed && outcome.label !== 'unresolved' && <p className="muted">Raw model score: {outcome.confidence.toFixed(3)} (uncalibrated)</p>}
-              {retrievalScore != null && <p className="muted">Retrieval score: {retrievalScore.toFixed(3)}</p>}
-              {outcome.rationale && <p>{outcome.rationale}</p>}
-              {evidence.some((item) => item !== outcome.rationale) && <ul>{evidence.filter((item) => item !== outcome.rationale).map((item, index) => <li key={index}>{item}</li>)}</ul>}
-            </details>
-          )}
-        </div>
-      </section>
+      </div>
 
-      {candidateId && (
-        <section className="card integrity-card" aria-labelledby="integrity-title">
-          <div className="section-title">
-            <span className="section-icon"><Fingerprint size={22} aria-hidden="true" /></span>
-            <div><h2 id="integrity-title">Official notice integrity</h2><p className="muted">Check the stored content hash and Merkle proof.</p></div>
-          </div>
-          <div className="row">
-            <button type="button" disabled={verifying} onClick={() => void runVerify(candidateId, false)}><ShieldCheck size={17} aria-hidden="true" /> Verify integrity</button>
-            <button type="button" className="btn-secondary" disabled={verifying} onClick={() => void runVerify(candidateId, true)}>Simulate tampering</button>
-          </div>
-          {verifying && <p className="muted" role="status">Checking the stored proof…</p>}
-          {verifyError && <p className="error" role="alert">{verifyError}</p>}
-          {verify && (
-            <div className={'banner ' + (verify.tamper ? 'banner-bad' : verify.ok ? 'banner-ok' : '')} role="status">
-              <strong>{INTEGRITY_MESSAGES[verify.integrity_status]}</strong>
-              <div className="proof-checks">
-                {typeof hashPassed === 'boolean' && <span>Hash check · {hashPassed ? 'Passed' : 'Failed'}</span>}
-                {hasMerkleProof && <span>Merkle proof · {proof?.recomputed_root === proof?.stored_root ? 'Passed' : 'Failed'}</span>}
-              </div>
-              {typeof transactionUrl === 'string' && /^https:\/\//i.test(transactionUrl) && <a href={transactionUrl} target="_blank" rel="noreferrer">View Polygon Amoy transaction ↗</a>}
-              <details><summary>Technical details</summary><pre className="pre">{JSON.stringify(proof, null, 2)}</pre></details>
-            </div>
-          )}
-        </section>
+      <div className="card">
+        <h2>Extracted fields (evidence)</h2>
+        {submission.fields.length === 0 ? (
+          <p className="muted">No fields extracted.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Value</th>
+                <th>Confidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              {submission.fields.map((f) => (
+                <tr key={f.field_name}>
+                  <td>{f.field_name}</td>
+                  <td>{f.value ?? <span className="muted">—</span>}</td>
+                  <td>{f.confidence != null ? f.confidence.toFixed(2) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {submission.redacted_text && (
+          <>
+            <h3>Redacted text</h3>
+            <pre className="pre">{submission.redacted_text}</pre>
+          </>
+        )}
+      </div>
+
+      {(outcome?.candidate_id || topCandidate) && (
+        <div className="card">
+          <h2>Closest official notice</h2>
+          <dl className="kv">
+            <dt>Notice</dt>
+            <dd>#{outcome?.candidate_id ?? topCandidate?.notice.id}</dd>
+            <dt>Institution</dt>
+            <dd>{outcome?.candidate_institution ?? '—'}</dd>
+            <dt>Issuer</dt>
+            <dd>{outcome?.candidate_issuer ?? topCandidate?.notice.issuer ?? '—'}</dd>
+            <dt>Date</dt>
+            <dd>{outcome?.candidate_notice_date ?? topCandidate?.notice.notice_date ?? '—'}</dd>
+            <dt>Deadline</dt>
+            <dd>{outcome?.candidate_deadline ?? topCandidate?.notice.deadline ?? '—'}</dd>
+            <dt>Audience</dt>
+            <dd>{topCandidate?.notice.audience ?? '—'}</dd>
+            <dt>Source</dt>
+            <dd>{outcome?.candidate_source_url ? <a href={outcome.candidate_source_url} target="_blank" rel="noreferrer">{outcome.candidate_source_url}</a> : '—'}</dd>
+            <dt>Retrieved</dt>
+            <dd>{topCandidate?.notice.retrieved_at ? new Date(topCandidate.notice.retrieved_at).toLocaleString() : '—'}</dd>
+            <dt>Content hash</dt>
+            <dd className="mono">{topCandidate?.notice.sha256 ?? '—'}</dd>
+          </dl>
+          {outcome?.candidate_text && <><h3>Official notice text</h3><pre className="pre">{outcome.candidate_text}</pre></>}
+          {outcome?.candidate_supplemental_extractions?.map((extraction) => (
+            <section key={`${extraction.source_url}-${extraction.extracted_text_sha256}`}>
+              <h3>Additional text extracted from the linked document</h3>
+              <p className="muted">{extraction.extraction_quality} · {extraction.extraction_method} · <a href={extraction.source_url} target="_blank" rel="noreferrer">Source document</a></p>
+              <pre className="pre">{extraction.extracted_text}</pre>
+            </section>
+          ))}
+          <Link to={`/notices`}>Browse all official notices</Link>
+        </div>
       )}
+
+      <div className="card">
+        <h2>Official notice integrity</h2>
+        <p className="muted">
+          Verify the matched official notice’s SHA-256 hash and Merkle proof against its recorded anchor.
+        </p>
+        <div className="row">
+          <button disabled={verifying || (!outcome?.candidate_id && !topCandidate)} onClick={() => runVerify(false)}>
+            Verify official notice
+          </button>
+          <button
+            className="btn-secondary"
+            disabled={verifying || (!outcome?.candidate_id && !topCandidate)}
+            onClick={() => runVerify(true)}
+          >
+            Simulate tamper
+          </button>
+        </div>
+        {verify && (
+          <div className={`banner ${verify.integrity_status === 'TAMPERED' ? 'banner-bad' : verify.integrity_status === 'VERIFIED' || verify.integrity_status === 'LOCAL_VERIFIED' ? 'banner-ok' : ''}`}>
+            <strong>{integrityMessage(verify.integrity_status)}</strong>
+            <dl className="kv">
+              <dt>Notice</dt><dd>#{outcome?.candidate_id ?? topCandidate?.notice.id}</dd>
+              <dt>Integrity status</dt><dd>{verify.integrity_status}</dd>
+              <dt>Hash check</dt><dd>{verify.details.integrity_ok === true ? 'Passed' : 'Failed'}</dd>
+              <dt>Merkle proof</dt><dd>{verify.details.recomputed_root === verify.details.stored_root ? 'Passed' : 'Failed'}</dd>
+              <dt>Network</dt><dd>{detailText('anchor_network') ?? (detailText('anchor_kind') === 'local' ? 'Local hash chain' : '—')}</dd>
+              <dt>Publisher</dt><dd className="mono">{detailText('anchor_issuer_address') ?? '—'}</dd>
+              <dt>Issuer-set hash</dt><dd className="mono">{detailText('anchor_issuer_id') ?? '—'}</dd>
+              <dt>Transaction status</dt><dd>{detailText('transaction_status') ?? detailText('anchor_status') ?? '—'}</dd>
+              <dt>Transaction hash</dt><dd className="mono">{detailText('transaction_hash') ?? '—'}</dd>
+              <dt>Contract</dt><dd className="mono">{detailText('anchor_contract_address') ?? '—'}</dd>
+              <dt>Block</dt><dd>{detailText('anchor_block_number') ?? '—'}</dd>
+              <dt>Timestamp</dt><dd>{detailText('anchor_timestamp') ? new Date(detailText('anchor_timestamp')!).toLocaleString() : '—'}</dd>
+            </dl>
+            {detailText('explorer_transaction_url') && (
+              <p><a href={detailText('explorer_transaction_url')!} target="_blank" rel="noreferrer">Open transaction on Polygon Amoy</a></p>
+            )}
+            {detailText('explorer_contract_url') && (
+              <p><a href={detailText('explorer_contract_url')!} target="_blank" rel="noreferrer">Open contract on Polygon Amoy</a></p>
+            )}
+            {detailText('anchor_error') && <p>{detailText('anchor_error')}</p>}
+            <pre className="pre">{JSON.stringify(verify.details, null, 2)}</pre>
+          </div>
+        )}
+      </div>
+
+      {error && <p className="error">{error}</p>}
     </div>
   )
 }

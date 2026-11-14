@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -20,6 +20,11 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
     display_name: str | None = None
+    institution_id: int | None = None
+
+
+class StudentInstitutionUpdate(BaseModel):
+    institution_id: int
 
 
 class UserLogin(BaseModel):
@@ -39,6 +44,13 @@ class UserOut(BaseModel):
     email: EmailStr
     role: str
     display_name: str | None = None
+    institution_id: int | None = None
+
+
+class InstitutionChoiceOut(BaseModel):
+    id: int
+    name: str
+    current_notice_count: int = 0
 
 
 # --- Provenance ---
@@ -126,6 +138,7 @@ class NoticeSummary(BaseModel):
     institution_id: int | None = None
     title: str | None = None
     published_date: str | None = None
+    published_on: date | None = None
     issuer: str | None = None
     notice_date: str | None = None
     deadline: str | None = None
@@ -145,6 +158,27 @@ class NoticeDetail(NoticeSummary):
     redacted_text: str | None = None
     fields: list[NoticeFieldOut] = []
     supplemental_extractions: list[NoticeDocumentExtractionOut] = []
+
+
+class StudentNoticeItem(NoticeSummary):
+    preview: str | None = None
+
+
+class NoticeMonthCount(BaseModel):
+    month: str
+    count: int
+
+
+class StudentNoticeFeed(BaseModel):
+    institution_id: int
+    institution_name: str
+    items: list[StudentNoticeItem]
+    total: int
+    page: int
+    page_size: int
+    page_count: int
+    months: list[NoticeMonthCount]
+    undated_count: int
 
 
 class CandidateOut(BaseModel):

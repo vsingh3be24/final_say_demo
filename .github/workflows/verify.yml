@@ -2,24 +2,6 @@ name: Verify FinalSay
 
 on:
   workflow_call:
-  pull_request:
-    paths:
-      - 'backend/**'
-      - 'apps/web/**'
-      - 'contracts/**'
-      - 'Dockerfile'
-      - 'scripts/docker-entrypoint.sh'
-      - '.github/workflows/**'
-  push:
-    branches:
-      - main
-    paths:
-      - 'backend/**'
-      - 'apps/web/**'
-      - 'contracts/**'
-      - 'Dockerfile'
-      - 'scripts/docker-entrypoint.sh'
-      - '.github/workflows/**'
 
 permissions:
   contents: read

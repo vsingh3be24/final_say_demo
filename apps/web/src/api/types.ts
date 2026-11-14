@@ -19,6 +19,13 @@ export interface UserOut {
   email: string
   role: Role
   display_name: string | null
+  institution_id: number | null
+}
+
+export interface InstitutionChoice {
+  id: number
+  name: string
+  current_notice_count: number
 }
 
 export interface Token {
@@ -47,10 +54,12 @@ export interface NoticeSummary {
   institution_id: number | null
   title: string | null
   published_date: string | null
+  published_on: string | null
   issuer: string | null
   notice_date: string | null
   deadline: string | null
   audience: string | null
+  extraction_quality: string
   source_url: string | null
   source_key: string | null
   version_no: number
@@ -58,6 +67,22 @@ export interface NoticeSummary {
   previous_version_id: number | null
   sha256: string | null
   retrieved_at: string | null
+}
+
+export interface StudentNoticeFeed {
+  institution_id: number
+  institution_name: string
+  items: StudentNoticeItem[]
+  total: number
+  page: number
+  page_size: number
+  page_count: number
+  months: { month: string; count: number }[]
+  undated_count: number
+}
+
+export interface StudentNoticeItem extends NoticeSummary {
+  preview: string | null
 }
 
 export interface NoticeDetail extends NoticeSummary {

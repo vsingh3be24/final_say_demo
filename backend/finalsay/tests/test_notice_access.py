@@ -3,8 +3,11 @@
 from fastapi.testclient import TestClient
 
 
-def _token(client: TestClient, email: str, password: str) -> str:
-    response = client.post("/api/auth/register", json={"email": email, "password": password})
+def _token(client: TestClient, email: str, password: str, institution_id: int | None = None) -> str:
+    response = client.post(
+        "/api/auth/register",
+        json={"email": email, "password": password, "institution_id": institution_id},
+    )
     assert response.status_code == 201
     login = client.post("/api/auth/login", data={"username": email, "password": password})
     assert login.status_code == 200
@@ -15,9 +18,27 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_student_cannot_read_or_recompare_another_students_submission(client: TestClient):
-    alice = _token(client, "alice@example.com", "s3cret1")
-    bob = _token(client, "bob@example.com", "s3cret1")
+def test_student_cannot_read_or_recompare_another_students_submission(client: TestClient, db_session):
+    from finalsay.models import Institution, Notice
+
+    institution = Institution(
+        name="Access Test University", slug="access-test-university",
+        scrape_type="vtu_examination", active=True,
+    )
+    db_session.add(institution)
+    db_session.flush()
+    db_session.add(
+        Notice(
+            kind="official",
+            institution_id=institution.id,
+            title="Official exam notice",
+            redacted_text="Official notice for upcoming examinations.",
+        )
+    )
+    db_session.commit()
+
+    alice = _token(client, "alice@example.com", "s3cret1", institution.id)
+    bob = _token(client, "bob@example.com", "s3cret1", institution.id)
     alice_submit = client.post(
         "/api/ingest/submit",
         data={"text": "A notice about an upcoming examination."},

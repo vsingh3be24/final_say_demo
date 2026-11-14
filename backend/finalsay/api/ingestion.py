@@ -29,6 +29,8 @@ from finalsay.models import (
     Institution,
     Notice,
     NoticeDocumentExtraction,
+    RelationEdge,
+    ReviewCase,
     ScrapeProgress,
     ScrapeRun,
     User,
@@ -64,9 +66,15 @@ async def submit(
     current_user: User = Depends(require_role("student", "admin")),
 ) -> ComparisonResponse:
     """Ingest a student submission (upload or paste) and classify it."""
-    # Never compare across institutions silently. If there is only one active
-    # institution with current official records, scope the submission to it;
-    # otherwise require the student to choose the institution explicitly.
+    if file is None and not text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide either a file (pdf/image) or pasted text.",
+        )
+
+    # Student verification always uses the college saved on the account. The
+    # form cannot silently select a different institution; admins retain the
+    # previous operational override behavior.
     available_institutions = list(
         db.scalars(
             select(Notice.institution_id)
@@ -80,7 +88,24 @@ async def submit(
             .distinct()
         ).all()
     )
-    if institution_id is None:
+    if current_user.role == "student":
+        if current_user.institution_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Choose your college before submitting a notice.",
+            )
+        if institution_id is not None and institution_id != current_user.institution_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Student submissions must use the college saved on the account.",
+            )
+        institution_id = current_user.institution_id
+        if institution_id not in available_institutions:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No current official notices are available for your college yet.",
+            )
+    elif institution_id is None:
         if len(available_institutions) == 1:
             institution_id = available_institutions[0]
         elif len(available_institutions) > 1:
@@ -118,12 +143,6 @@ async def submit(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 detail="Unsupported file type; upload a PDF or image, or paste text.",
             )
-    elif not text:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Provide either a file (pdf/image) or pasted text.",
-        )
-
     try:
         submission = ingestion.create_submission(
             db,
@@ -173,6 +192,73 @@ async def submit(
         candidate_text=outcome.candidate.redacted_text if outcome.candidate else None,
         candidate_supplemental_extractions=candidate_extractions,
         evidence=outcome.evidence,
+    )
+
+
+@router.get("/submissions/{submission_id}/result", response_model=ComparisonResponse)
+def get_submission_result(
+    submission_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ComparisonResponse:
+    """Return the persisted comparison so a refreshed result is never stale."""
+    submission = db.get(Notice, submission_id)
+    if submission is None or submission.kind != "submission":
+        raise HTTPException(status_code=404, detail="submission not found")
+    if current_user.role == "student" and submission.submitted_by != current_user.id:
+        raise HTTPException(status_code=404, detail="submission not found")
+    if current_user.role not in {"student", "admin", "reviewer"}:
+        raise HTTPException(status_code=403, detail="role cannot view comparison results")
+
+    edge = db.scalar(
+        select(RelationEdge)
+        .where(RelationEdge.src_notice_id == submission.id)
+        .order_by(RelationEdge.created_at.desc(), RelationEdge.id.desc())
+        .limit(1)
+    )
+    if edge is None:
+        raise HTTPException(status_code=404, detail="comparison result not found")
+
+    candidate = db.get(Notice, edge.dst_notice_id)
+    if candidate is not None and candidate.id == submission.id:
+        candidate = None
+    review_case = db.scalar(
+        select(ReviewCase)
+        .where(ReviewCase.edge_id == edge.id)
+        .order_by(ReviewCase.id.desc())
+        .limit(1)
+    )
+    extractions = (
+        list(
+            db.scalars(
+                select(NoticeDocumentExtraction)
+                .where(NoticeDocumentExtraction.notice_id == candidate.id)
+                .order_by(NoticeDocumentExtraction.extracted_at.desc())
+            ).all()
+        )
+        if candidate is not None
+        else []
+    )
+    return ComparisonResponse(
+        submission_id=submission.id,
+        candidate_id=candidate.id if candidate else None,
+        edge_id=edge.id,
+        label=edge.label,
+        confidence=edge.confidence,
+        rationale=edge.rationale or "Persisted comparison result.",
+        model=edge.model or "",
+        status=edge.status,
+        gated=edge.status == "unresolved",
+        review_case_id=review_case.id if review_case else None,
+        candidate_score=None,
+        candidate_institution=(candidate.institution.name if candidate and candidate.institution else None),
+        candidate_issuer=candidate.issuer if candidate else None,
+        candidate_notice_date=candidate.notice_date if candidate else None,
+        candidate_deadline=candidate.deadline if candidate else None,
+        candidate_source_url=candidate.source_url if candidate else None,
+        candidate_text=candidate.redacted_text if candidate else None,
+        candidate_supplemental_extractions=extractions,
+        evidence=[],
     )
 
 

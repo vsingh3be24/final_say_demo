@@ -160,6 +160,14 @@ cd backend && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/python -m uvicor
 cd apps/web && npm install && npm run dev
 ```
 
+If another local service already owns port 8000, run the backend and frontend
+with the same alternate API port. The launcher configures Vite's same-origin
+`/api` proxy from that value, so no API URL needs to be embedded in the bundle:
+
+```bash
+FINALSAY_API_PORT=8001 FINALSAY_WEB_PORT=5173 scripts/run_demo.sh
+```
+
 The local launcher and `make backend` use cached Hugging Face model files
 offline by default while keeping university-source HTTPS polling enabled. For a
 fresh environment that must download model weights, start with

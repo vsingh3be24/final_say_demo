@@ -21,6 +21,7 @@ from sqlalchemy import func, or_, select
 from finalsay.adapters.live import _LISTING_DATE_RE
 from finalsay.db import SessionLocal
 from finalsay.models import Institution, Notice
+from finalsay.services.notice_dates import parse_publication_date
 
 
 _OFFICIAL_LISTING_RE = re.compile(r"(?im)^\s*Official listing:\s*([^\r\n]*)")
@@ -60,6 +61,7 @@ def backfill(*, apply: bool = False) -> list[tuple[int, str, str]]:
             recovered.append((notice.id, notice.title or "(untitled)", date))
             if apply:
                 notice.published_date = date[:80]
+                notice.published_on = parse_publication_date(date)
         if apply:
             db.commit()
         return recovered

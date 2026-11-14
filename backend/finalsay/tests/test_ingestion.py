@@ -6,11 +6,103 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from finalsay.adapters.base import RawNotice
-from finalsay.models import Institution, Notice, NoticeField, ScrapeProgress, ScrapeRun
+from finalsay.models import (
+    Institution,
+    Notice,
+    NoticeField,
+    RelationEdge,
+    ReviewCase,
+    ScrapeProgress,
+    ScrapeRun,
+    User,
+)
 from finalsay.services import comparison
 from finalsay.services import ingestion
+
+
+def test_submission_title_parses_curly_quoted_wrapped_ocr_subject():
+    text = (
+        "NOTIFICATION\n\n"
+        "‘Subject: Filling up Examination form for Regular, NCWEB & SOL students for\n"
+        "‘Session December 2026-2027 Examination of date reg.\n\n"
+        "In continuation to our earlier Notification Ref. No. Exam-VII/2028/01"
+    )
+    assert ingestion._extract_title(text) == (
+        "Filling up Examination form for Regular, NCWEB & SOL students for "
+        "Session December 2026-2027 Examination of date reg"
+    )
+
+
+def test_persisted_result_endpoint_returns_latest_reviewed_comparison(client, db_session):
+    institution = Institution(
+        name="Result University", slug="persisted-result-test", active=True
+    )
+    db_session.add(institution)
+    db_session.commit()
+    register = client.post(
+        "/api/auth/register",
+        json={
+            "email": "persisted-result@example.com",
+            "password": "secret123",
+            "institution_id": institution.id,
+        },
+    )
+    assert register.status_code == 201, register.text
+    user_row = db_session.scalar(
+        select(User).where(User.email == "persisted-result@example.com")
+    )
+    official = Notice(
+        kind="official",
+        institution_id=institution.id,
+        title="Exam timetable",
+        redacted_text="Official listing: Exam timetable",
+        extraction_quality="listing_only",
+    )
+    db_session.add(official)
+    db_session.flush()
+    submission = Notice(
+        kind="submission",
+        institution_id=institution.id,
+        submitted_by=user_row.id,
+        title="Exam timetable",
+        redacted_text="Exam timetable",
+        extraction_quality="student_submitted",
+    )
+    db_session.add(submission)
+    db_session.flush()
+    edge = RelationEdge(
+        src_notice_id=submission.id,
+        dst_notice_id=official.id,
+        label="unresolved",
+        confidence=0.91,
+        rationale="Portal listing only; routed to reviewer.",
+        model="semantic-nli-deberta-v3-small",
+        status="unresolved",
+    )
+    db_session.add(edge)
+    db_session.flush()
+    db_session.add(ReviewCase(edge_id=edge.id, status="open", assigned_role="reviewer"))
+    db_session.commit()
+
+    login = client.post(
+        "/api/auth/login",
+        data={"username": "persisted-result@example.com", "password": "secret123"},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+    result = client.get(
+        f"/api/ingest/submissions/{submission.id}/result",
+        headers=_auth(token),
+    )
+
+    assert result.status_code == 200
+    assert result.json()["candidate_id"] == official.id
+    assert result.json()["label"] == "unresolved"
+    assert result.json()["gated"] is True
+    assert result.json()["rationale"] == "Portal listing only; routed to reviewer."
 
 
 def _token(client, make_user, email, password, role):
@@ -388,11 +480,29 @@ def test_fetch_requires_admin(client: TestClient, make_user):
     assert resp.status_code == 403
 
 
-def test_submit_paste_returns_classified_result(client: TestClient, make_user):
-    admin = _token(client, make_user, "admin2@example.com", "s3cret1", "admin")
-    client.post("/api/ingest/fetch", headers=_auth(admin))
-
+def test_submit_paste_returns_classified_result(client: TestClient, make_user, db_session):
+    institution = Institution(
+        name="Submission Test University", slug="submission-test-university",
+        scrape_type="vtu_examination", active=True,
+    )
+    db_session.add(institution)
+    db_session.flush()
+    db_session.add(
+        Notice(
+            kind="official",
+            institution_id=institution.id,
+            title="Mid-term examination schedule",
+            redacted_text="The mid-term examination schedule remains in effect.",
+        )
+    )
+    db_session.commit()
     student = _token(client, make_user, "stud3@example.com", "s3cret1", "student")
+    assigned = client.patch(
+        "/api/auth/me/institution",
+        json={"institution_id": institution.id},
+        headers=_auth(student),
+    )
+    assert assigned.status_code == 200, assigned.text
     resp = client.post(
         "/api/ingest/submit",
         data={
@@ -422,12 +532,33 @@ def test_submit_without_input_is_422(client: TestClient, make_user):
     assert resp.status_code == 422
 
 
-def test_submit_image_without_ocr_engine_is_422(client: TestClient, make_user, monkeypatch):
+def test_submit_image_without_ocr_engine_is_422(client: TestClient, make_user, monkeypatch, db_session):
     """With no Tesseract engine, image upload degrades to 422 asking for text."""
     from finalsay.services import extraction
 
     monkeypatch.setattr(extraction, "_tesseract_available", lambda: None)
+    institution = Institution(
+        name="OCR Test University", slug="ocr-test-university", active=True,
+        scrape_type="thapar_html",
+    )
+    db_session.add(institution)
+    db_session.flush()
+    db_session.add(
+        Notice(
+            kind="official",
+            institution_id=institution.id,
+            title="OCR source notice",
+            redacted_text="An official OCR test notice.",
+        )
+    )
+    db_session.commit()
     student = _token(client, make_user, "stud5@example.com", "s3cret1", "student")
+    assigned = client.patch(
+        "/api/auth/me/institution",
+        json={"institution_id": institution.id},
+        headers=_auth(student),
+    )
+    assert assigned.status_code == 200, assigned.text
     # A tiny fake PNG payload; extraction should raise OcrUnavailable -> 422.
     files = {"file": ("scan.png", b"\x89PNG\r\n\x1a\nfake", "image/png")}
     resp = client.post("/api/ingest/submit", files=files, headers=_auth(student))
@@ -929,6 +1060,12 @@ def test_student_old_notice_finds_revised_notice_published_at_new_url(
     student_token = _token(
         client, make_user, "revision-student@example.com", "s3cret1", "student"
     )
+    selected = client.patch(
+        "/api/auth/me/institution",
+        json={"institution_id": institution.id},
+        headers=_auth(student_token),
+    )
+    assert selected.status_code == 200, selected.text
     submitted = client.post(
         "/api/ingest/submit",
         data={

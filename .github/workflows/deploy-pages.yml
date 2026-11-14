@@ -40,9 +40,13 @@ jobs:
       - name: Build frontend
         working-directory: apps/web
         env:
-          VITE_API_URL: ${{ vars.API_URL || 'https://finalsay-backend.onrender.com/api' }}
-          VITE_BASE_URL: /FinalSay-secondprototype/
-        run: npm run build
+          VITE_API_URL: ${{ vars.FINALSAY_API_URL }}
+          VITE_BASE_URL: /final_say_demo/
+        run: |
+          case "$VITE_API_URL" in
+            ""|https://*) npm run build ;;
+            *) echo 'FINALSAY_API_URL must be an HTTPS API URL.' >&2; exit 1 ;;
+          esac
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

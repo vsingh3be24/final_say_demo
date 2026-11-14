@@ -136,6 +136,13 @@ def test_end_to_end_demo_journey(client: TestClient, make_user):
     assert created_src.status_code == 201, created_src.text
     institution_id = created_src.json()["id"]
 
+    selected_campus = client.patch(
+        "/api/auth/me/institution",
+        json={"institution_id": institution_id},
+        headers=_auth(student),
+    )
+    assert selected_campus.status_code == 200, selected_campus.text
+
     grant = client.post(
         "/api/issuer-memberships",
         json={"issuer_email": "smoke-issuer@example.com", "institution_id": institution_id},
@@ -278,7 +285,30 @@ def test_persisted_submission_has_no_unredacted_pii(client: TestClient, make_use
     stores only redacted content: re-read the persisted Notice + NoticeField
     rows directly from the database and assert no original PII survived. This
     would fail if the redaction-before-storage guarantee regressed."""
+    from finalsay.models import Institution
+
+    institution = Institution(
+        name="PII Test University", slug="pii-test-university",
+        scrape_type="vtu_examination", active=True,
+    )
+    db_session.add(institution)
+    db_session.flush()
+    db_session.add(
+        Notice(
+            kind="official",
+            institution_id=institution.id,
+            title="Official PII test source",
+            redacted_text="An official notice for the PII smoke test.",
+        )
+    )
+    db_session.commit()
     student = _token(client, make_user, "smoke-pii@example.com", "s3cret1", "student")
+    selected = client.patch(
+        "/api/auth/me/institution",
+        json={"institution_id": institution.id},
+        headers=_auth(student),
+    )
+    assert selected.status_code == 200, selected.text
     resp = client.post(
         "/api/ingest/submit",
         data={"text": _SUBMISSION_TEXT},

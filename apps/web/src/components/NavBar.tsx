@@ -1,32 +1,59 @@
+import { useEffect, useState } from 'react'
 import { Link, NavLink, useNavigate } from 'react-router-dom'
-import { Bell, BookOpen, ClipboardList, FileCheck2, Globe2, Landmark, LogOut, Send, ShieldCheck } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
+import { api, errorMessage } from '../api/client'
+import type { InstitutionChoice } from '../api/types'
 import type { Role } from '../api/types'
 
 interface NavItem {
   to: string
   label: string
-  icon: LucideIcon
   roles: Role[]
 }
 
 // Role-aware navigation: only links the signed-in role can use are shown.
 const NAV: NavItem[] = [
-  { to: '/submit', label: 'Verify a notice', icon: FileCheck2, roles: ['student'] },
-  { to: '/notices', label: 'Official notices', icon: Landmark, roles: ['student', 'reviewer', 'admin', 'issuer'] },
-  { to: '/alerts', label: 'Recent updates', icon: Bell, roles: ['student'] },
-  { to: '/reviewer/queue', label: 'Review queue', icon: ClipboardList, roles: ['reviewer', 'admin'] },
-  { to: '/reviewer/benchmark', label: 'Benchmark', icon: BookOpen, roles: ['reviewer'] },
-  { to: '/admin/sources', label: 'Sources', icon: Globe2, roles: ['admin'] },
-  { to: '/admin/provenance', label: 'Integrity', icon: ShieldCheck, roles: ['admin'] },
-  { to: '/issuer/publish', label: 'Publish', icon: Send, roles: ['issuer'] },
+  { to: '/submit', label: 'Submit', roles: ['student'] },
+  { to: '/notices', label: 'Notices', roles: ['student', 'reviewer', 'admin', 'issuer'] },
+  { to: '/alerts', label: 'Alerts', roles: ['student'] },
+  { to: '/reviewer/queue', label: 'Queue', roles: ['reviewer', 'admin'] },
+  { to: '/reviewer/benchmark', label: 'Benchmark', roles: ['reviewer'] },
+  { to: '/admin/sources', label: 'Sources', roles: ['admin'] },
+  { to: '/admin/provenance', label: 'Integrity', roles: ['admin'] },
+  { to: '/issuer/publish', label: 'Publish', roles: ['issuer'] },
 ]
 
 export default function NavBar() {
-  const { user, logout } = useAuth()
+  const { user, logout, updateInstitution } = useAuth()
   const navigate = useNavigate()
-  const accountName = user?.display_name || user?.email || ''
+  const [institutions, setInstitutions] = useState<InstitutionChoice[]>([])
+  const [campusBusy, setCampusBusy] = useState(false)
+  const [campusError, setCampusError] = useState('')
+
+  useEffect(() => {
+    if (user?.role !== 'student') {
+      setInstitutions([])
+      return
+    }
+    api
+      .get<InstitutionChoice[]>('/institutions')
+      .then((res) => setInstitutions(res.data))
+      .catch(() => setInstitutions([]))
+  }, [user?.role])
+
+  const onInstitutionChange = async (institutionId: number) => {
+    if (!institutionId || institutionId === user?.institution_id || campusBusy) return
+    setCampusBusy(true)
+    setCampusError('')
+    try {
+      await updateInstitution(institutionId)
+      navigate('/notices')
+    } catch (err) {
+      setCampusError(errorMessage(err))
+    } finally {
+      setCampusBusy(false)
+    }
+  }
 
   const onLogout = () => {
     logout()
@@ -37,27 +64,43 @@ export default function NavBar() {
     <header className="navbar">
       <div className="nav-inner">
         <Link to="/" className="brand">
-          <span className="brand-mark"><ShieldCheck size={22} aria-hidden="true" /></span>
-          <span>FinalSay</span>
+          <span className="brand-mark" aria-hidden="true">F</span>
+          <span className="brand-wordmark">FinalSay</span>
+          <span className="brand-caption">Notice intelligence</span>
         </Link>
-        {user && (
-          <nav className="nav-links" aria-label="Main navigation">
-            {NAV.filter((item) => item.roles.includes(user.role)).map(({ to, label, icon: Icon }) => (
-              <NavLink key={to} to={to} className="nav-link">
-                <Icon size={17} aria-hidden="true" /> {label}
+        <nav className="nav-links">
+          {user &&
+            NAV.filter((item) => item.roles.includes(user.role)).map((item) => (
+              <NavLink key={item.to} to={item.to} className="nav-link">
+                {item.label}
               </NavLink>
             ))}
-          </nav>
-        )}
+        </nav>
         <div className="nav-user">
           {user ? (
             <>
-              <div className="account">
-                <span className="avatar" aria-hidden="true">{accountName.charAt(0).toUpperCase()}</span>
-                <span className="account-text"><strong>{accountName}</strong><small>{user.role}</small></span>
-              </div>
-              <button className="icon-button btn-secondary" onClick={onLogout} aria-label="Log out" title="Log out">
-                <LogOut size={17} aria-hidden="true" />
+              {user.role === 'student' && user.institution_id !== null && (
+                <div className="campus-switcher">
+                  <span className="campus-caption">My college</span>
+                  <select
+                    aria-label="Change my college"
+                    value={user.institution_id}
+                    disabled={campusBusy}
+                    onChange={(event) => void onInstitutionChange(Number(event.target.value))}
+                  >
+                    {institutions.map((institution) => (
+                      <option key={institution.id} value={institution.id}>
+                        {institution.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <span className="muted">
+                {user.display_name || user.email} ({user.role})
+              </span>
+              <button className="btn-secondary" onClick={onLogout}>
+                Log out
               </button>
             </>
           ) : (
@@ -65,12 +108,13 @@ export default function NavBar() {
               <NavLink to="/login" className="nav-link">
                 Log in
               </NavLink>
-              <NavLink to="/register" className="button btn-secondary">
-                Create account
+              <NavLink to="/register" className="nav-link">
+                Register
               </NavLink>
             </>
           )}
         </div>
+        {campusError && <span className="nav-campus-error" role="alert">{campusError}</span>}
       </div>
     </header>
   )

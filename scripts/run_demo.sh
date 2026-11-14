@@ -23,6 +23,8 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BACKEND_DIR="${ROOT_DIR}/backend"
 WEB_DIR="${ROOT_DIR}/apps/web"
 VENV_DIR="${BACKEND_DIR}/.venv"
+API_PORT="${FINALSAY_API_PORT:-8000}"
+WEB_PORT="${FINALSAY_WEB_PORT:-5173}"
 
 # Prefer the pyenv 3.11 interpreter (bare python3 is 3.9 on this sandbox).
 PYENV_PY="${HOME}/.pyenv/versions/3.11.15/bin/python"
@@ -136,20 +138,31 @@ echo "[run_demo] configuring VTU, Delhi Examination, and Mumbai sources..."
 ( cd "${BACKEND_DIR}" && "${VENV_PY}" -m finalsay.services.source_onboarding --apply )
 
 # --- Backend (background) -----------------------------------------------------
-echo "[run_demo] starting backend on http://127.0.0.1:8000 ..."
+echo "[run_demo] starting backend on http://127.0.0.1:${API_PORT} ..."
 ( cd "${BACKEND_DIR}" && exec "${VENV_PY}" -m uvicorn finalsay.main:app \
-    --host 127.0.0.1 --port 8000 ) &
+    --host 127.0.0.1 --port "${API_PORT}" ) &
 UVICORN_PID=$!
 
 # Wait for the backend health endpoint to answer.
 echo "[run_demo] waiting for backend health..."
+BACKEND_HEALTHY=0
 for _ in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:8000/api/health" >/dev/null 2>&1; then
+  if curl -fsS "http://127.0.0.1:${API_PORT}/api/health/ready" 2>/dev/null | \
+      grep -q '"status":"ok"'; then
     echo "[run_demo] backend is up."
+    BACKEND_HEALTHY=1
+    break
+  fi
+  if ! kill -0 "${UVICORN_PID}" 2>/dev/null; then
     break
   fi
   sleep 1
 done
+if [[ "${BACKEND_HEALTHY}" -ne 1 ]]; then
+  echo "[run_demo] FinalSay API did not become healthy on port ${API_PORT}." >&2
+  echo "[run_demo] Choose a free FINALSAY_API_PORT; do not point Vite at another service." >&2
+  exit 1
+fi
 
 # --- Frontend deps ------------------------------------------------------------
 echo "[run_demo] installing frontend dependencies (npm install)..."
@@ -161,9 +174,9 @@ cat <<'BANNER'
 ============================================================
   FinalSay local app is starting
 ============================================================
-  Frontend (PWA):  http://127.0.0.1:5173
-  Backend API:     http://127.0.0.1:8000
-  API docs:        http://127.0.0.1:8000/docs
+  Frontend (PWA):  http://127.0.0.1:${WEB_PORT}
+  Backend API:     http://127.0.0.1:${API_PORT}
+  API docs:        http://127.0.0.1:${API_PORT}/docs
 
   Students can register from the Register page.
   Bootstrap the first admin in another terminal with:
@@ -178,4 +191,5 @@ BANNER
 # Not exec'd: the parent shell must survive to run the EXIT trap that stops the
 # background uvicorn (and Postgres) when Vite is interrupted.
 cd "${WEB_DIR}"
-npm run dev -- --host 127.0.0.1 --port 5173
+export FINALSAY_API_PROXY_TARGET="${FINALSAY_API_PROXY_TARGET:-http://127.0.0.1:${API_PORT}}"
+npm run dev -- --host 127.0.0.1 --port "${WEB_PORT}"

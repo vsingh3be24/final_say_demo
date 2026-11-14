@@ -23,5 +23,3 @@ backend/finalsay/adapters/fixture_sources.py
 backend/finalsay/adapters/inst_northgate.py
 backend/finalsay/adapters/inst_riverside.py
 backend/finalsay/adapters/inst_summit.py
-.agents
-.kiro
